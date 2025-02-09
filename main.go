@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"sort"
@@ -11,10 +13,10 @@ import (
 )
 
 type Book struct {
-	ID     int     `json:"id"`
-	Isbn   string  `json:"isbn"`
-	Title  string  `json:"title"`
-	Author *Author `json:"author"`
+	ID     int       `json:"id"`
+	Isbn   string    `json:"isbn"`
+	Title  string    `json:"title"`
+	Author *[]Author `json:"author"`
 }
 
 type Author struct {
@@ -50,12 +52,25 @@ func getBook(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(&Book{})
 }
 
-// create
 func createBook(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	var book Book
-	_ = json.NewDecoder(r.Body).Decode(&book)
-	book.ID = len(books) + 1
+
+	// ตรวจสอบข้อผิดพลาดในการ Decode JSON
+	if err := json.NewDecoder(r.Body).Decode(&book); err != nil {
+		http.Error(w, "Invalid request payload", http.StatusBadRequest)
+		return
+	}
+
+	// ตรวจสอบว่า books ว่างหรือไม่ และหาค่า ID สูงสุด
+	maxID := 0
+	for _, b := range books {
+		if b.ID > maxID {
+			maxID = b.ID
+		}
+	}
+	book.ID = maxID + 1
+
 	books = append(books, book)
 	json.NewEncoder(w).Encode(book)
 }
@@ -82,28 +97,33 @@ func updateBook(w http.ResponseWriter, r *http.Request) {
 			}
 			// make not change sorting
 
-			book.ID = idParam
+			// book.ID = idParam
 			books = append(books, book)
-			// sort by id
-			for i := 0; i < len(books)-1; i++ {
-				if books[i].ID > books[i+1].ID {
-					books[i], books[i+1] = books[i+1], books[i]
-				}
-			}
 
 			json.NewEncoder(w).Encode(book)
 			return
 		}
 	}
 
-	http.Error(w, "Book not found", http.StatusNotFound)
+	var buffer bytes.Buffer
+
+	if err := json.NewEncoder(&buffer).Encode(books); err != nil {
+		http.Error(w, "Failed to encode books", http.StatusInternalServerError)
+		return
+	}
+
+	errorMsg := "Book not found: " + buffer.String()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+
+	http.Error(w, errorMsg, http.StatusNotFound)
 }
 
 // delete
 func deleteBook(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	params := mux.Vars(r)
-	for _, item := range books {
+	for index, item := range books {
 		idParam, err := strconv.Atoi(params["id"])
 		if err != nil {
 			log.Println("Invalid ID format")
@@ -111,23 +131,47 @@ func deleteBook(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if item.ID == idParam {
-			// delete
-			books = append(books[:idParam-1], books[idParam:]...)
+			// delete item
+			books = append(books[:index], books[index+1:]...)
 
 			json.NewEncoder(w).Encode(item)
 			return
 		}
 	}
-	json.NewEncoder(w).Encode(books)
+
+	var buffer bytes.Buffer
+
+	if err := json.NewEncoder(&buffer).Encode(books); err != nil {
+		http.Error(w, "Failed to encode books", http.StatusInternalServerError)
+		return
+	}
+
+	errorMsg := "Book not found" + buffer.String()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	http.Error(w, errorMsg, http.StatusNotFound)
 }
 
 func main() {
 	r := mux.NewRouter()
-	books = []Book{(Book{ID: 1, Isbn: "12345", Title: "Book 1", Author: &Author{Firstname: "John", Lastname: "Doe"}})}
 	// append another book
-	books = append(books, Book{ID: 2, Isbn: "54321", Title: "Book 2", Author: &Author{Firstname: "Jane", Lastname: "Doe"}})
-	// append another book
-	books = append(books, Book{ID: 3, Isbn: "12345", Title: "Book 3", Author: &Author{Firstname: "John", Lastname: "Doe"}})
+	values := []string{"albert", "berina", "charles"}
+	authors := []Author{}
+
+	for _, val := range values {
+		author := Author{
+			Firstname: fmt.Sprintf("John %s", val),
+			Lastname:  fmt.Sprintf("Doe %s", val),
+		}
+		authors = append(authors, author)
+	}
+	books = append(books, Book{ID: 3, Isbn: "12345", Title: "Book 3", Author: &authors})
+	books = append(books, Book{ID: 3, Isbn: "67890", Title: "Book 3", Author: &[]Author{
+		{"oak", "kasidit"},
+		{Firstname: "John", Lastname: "Smith"},
+		{Firstname: "Jane", Lastname: "Doe"},
+		{values[0], values[1]},
+	}})
 
 	r.HandleFunc("/books", getBooks).Methods("GET")
 	r.HandleFunc("/book/{id}", getBook).Methods("GET")
